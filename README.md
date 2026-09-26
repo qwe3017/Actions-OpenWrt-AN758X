@@ -9,7 +9,8 @@
 .github/workflows/build-ponwrt.yml     主构建流程（机型可选 / 释放空间 / 工具链缓冲）
 .github/workflows/cache-keepalive.yml  每 5 天 touch 缓存，防止被回收
 diy-part1.sh    拉取可选插件到 package/custom（passwall/openclash/mosdns/lucky/tailscale 等，默认全关）
-diy-part2.sh    把默认时区改成中国（Asia/Shanghai, CST-8）
+diy-part2.sh    默认值定制：① 时区改中国（Asia/Shanghai, CST-8）
+                ② 5G WiFi：国家码 CN / 信道 auto / 频宽 160MHz
 configs/        每机型一份精简 diffconfig（约 440 行，需 make defconfig 展开）
 files/          自定义 rootfs 文件，会自动拷进源码（sbin/tempinfo + 两个 uci-defaults）
 packages/       CI 仓库自带的本地包（不走 clone），由 diy-part1.sh 拷进 package/custom
@@ -86,6 +87,98 @@ lmo 名取自 **po 文件主名**；而运行时按
 官方 app 都是 basename 命名：`firewall.po`、`package-manager.po`、`pon.po`。
 故 diy-part1.sh 在 clone 后把 `po/zh_Hans/*.po` 改名为 `airoha-npu.po`（幂等）。
 
+## 5G WiFi 默认值（国家码 CN / 信道 auto / 160MHz）
+
+由 `diy-part2.sh` 第 4 段实现，落在
+`files/etc/uci-defaults/96-wifi-5g-cn`（**首启执行**）。
+
+### 默认值
+
+| 选项 | 值 |
+|---|---|
+| `country` | `CN`（中国） |
+| `country_ie` | `1`（beacon 中广播国家码） |
+| `channel` | `auto`（自动选信道 / ACS） |
+| `htmode` | `HE160`（160MHz，WiFi 6）；不支持则回落 `HE80` |
+
+只作用于 **5G radio**，2.4G 不动。
+
+### 5G radio 的识别（兼容新旧两种写法）
+
+```sh
+# 新版 OpenWrt / ImmortalWrt
+option band '5g'
+# 旧版
+option hwmode '11a'
+```
+
+脚本两者都认：
+
+```sh
+[ "$band" = "5g" ] && is5g=1
+[ -z "$band" ] && [ "$hwmode" = "11a" ] && is5g=1
+```
+
+### 160MHz 能力检测与回落
+
+```sh
+iw phy "$phy" info | grep -q '160 MHz'
+```
+
+- 检测到支持 → `HE160`
+- 检测到不支持 → 回落 `HE80` 并写日志
+- **取不到 `phy` 选项时不检测**，保持 `HE160` ——
+  避免没有 `phy` 字段的 radio 被误判回落
+
+### 怎么改默认值
+
+编辑 `diy-part2.sh` 顶部的编译期常量（会被注入 uci-defaults 脚本）：
+
+```bash
+WIFI_5G_COUNTRY="${WIFI_5G_COUNTRY:-CN}"
+WIFI_5G_CHANNEL="${WIFI_5G_CHANNEL:-auto}"
+WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"
+WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"
+```
+
+也支持 workflow 层通过环境变量覆盖。
+
+### 时序问题（已处理）
+
+`uci-defaults` 可能早于 `wifi config` 执行，此时 `/etc/config/wireless`
+还不存在。脚本自带处理：
+
+```sh
+if [ ! -f /etc/config/wireless ]; then
+    command -v wifi >/dev/null 2>&1 && wifi config >/dev/null 2>&1
+fi
+```
+
+### 注意事项
+
+- **DFS**：CN 法规下 160MHz 需要信道 36–64，其中 52–64 属 DFS 信道。
+  ACS 若选中，启动时会先做雷达检测（CAC），**WiFi 可能延迟 1–10 分钟才出现**
+  或自动跳频。这是正常现象，不是故障。
+- **hostapd 版本**：需完整版 `wpad-*` / `hostapd`，
+  精简版 `wpad-basic` 可能不支持 HE160（脚本会给出 warning）。
+  当前配置用的是 `wpad-openssl`，完整版，支持。
+- **ACS 与 160MHz**：部分驱动的自动信道选择不支持 160MHz，
+  `channel='auto'` + `HE160` 组合可能启动失败。
+  若遇到 5G 起不来，改成固定信道 `option channel '36'` 即可
+  （36–48 非 DFS，启动快）。
+- 想彻底关掉这个功能：删掉 `files/etc/uci-defaults/96-wifi-5g-cn`，
+  或把 diy-part2.sh 第 4 段注释掉。
+
+### 验证
+
+```sh
+uci show wireless | grep -E "country|channel|htmode"
+logread | grep wifi-5g
+iw dev                      # 看实际频宽
+# 或
+iwinfo | grep -A3 "Channel"  # Channel/Width 应显示 160 MHz
+```
+
 ## NAT 类型选择器（网络 → NAT 类型）
 
 `packages/luci-app-natmode`（本地包）提供一个**三选一**界面，位置：
@@ -146,11 +239,177 @@ if (L.hasSystemFeature('fullcone')) {
 | 场景 | 结果 |
 |------|------|
 | 在本插件页切换 | 写 `natmode.main.mode` + `firewall` 的 fullcone，两边都同步 ✅ |
-| 在防火墙页直接改 FullCone 开关 | **只改 `firewall`，`natmode.main.mode` 不变** → 本页显示与实际不符 ⚠️ |
+| 在防火墙页直接改 FullCone 开关 | **只改 `firewall`，`natmode.main.mode` 不变** → 两边不一致 ⚠️ |
 
-针对第二种情况，`natmode-apply status` 会从实际 UCI / nftables 状态**反推生效模式**
-（`effective` 字段），页面在两者不一致时给出黄色告警并提示重新保存同步。
-所以不会出现"静默不一致"——差异一定会被看见。
+### ⚠️ 曾经的 bug：插件里改不了 NAT 类型
+
+早期版本用 `detect_effective()` 强行覆盖，在保存流程中出问题：
+
+```
+handleSave → 写 natmode.main.mode=symmetric
+           → ui.changes.apply() → firewall reload
+                → init.d/natmode 的 reapply → do_sync
+                     此时 firewall.fullcone 仍是 1（apply 还没跑）
+                     → 把 natmode.main.mode 改回 fullcone ❌
+           → apply 读到 fullcone → 什么都没做
+```
+
+**`do_sync` 现在只处理无歧义的两种情况，其余保持不动。**
+
+根因是 `firewall.fullcone` 只有 `1 / 空` 两态，而 natmode 有三档：
+
+| natmode.mode | firewall.fullcone | do_sync 结果 | 说明 |
+|---|---|---|---|
+| fullcone | `1` | fullcone（不变） | 一致 |
+| fullcone | 空/未设 | **restricted** | 本页记录过期，降级 |
+| restricted | `1` | **fullcone** | 防火墙页勾选了，同步 |
+| restricted | 空/未设 | restricted（**不动**） | 有歧义，保持 |
+| symmetric | `1` | **fullcone** | 防火墙页勾选了，同步 |
+| symmetric | 空/未设 | symmetric（**不动**） | 有歧义，保持 |
+
+**空 = 可能是 NAT3 也可能是 NAT4**，且 nft 随机端口规则在 fw4 reload 后已被冲掉、
+无法据此区分，所以只有 `natmode.main.mode` 是可靠记录 —— 绝不能覆盖。
+
+### IPv6 FullCone（fullcone6）独立选项
+
+页面上第二个复选框：**「同时开启 IPv6 FullCone NAT（fullcone6）」**，
+默认**不勾选**（UCI `natmode.main.fullcone6='0'`）。
+
+对应 `firewall.@defaults[0].fullcone6`：
+
+| 条件 | fullcone6 键 |
+|------|-------------|
+| mode=fullcone 且 `fullcone6='1'` | `uci set ... fullcone6='1'` |
+| mode=fullcone 且 `fullcone6='0'`（默认） | 删除该键 |
+| mode=restricted / symmetric | 始终删除该键 |
+
+**为什么默认关闭**：
+
+- IPv6 通常直接分配公网前缀（`/64` 或 `/56`），**根本不做 NAT**，
+  fullcone6 收益有限
+- 少数运营商/环境下开启 fullcone6 反而导致 IPv6 连接异常
+- 与防火墙页行为一致 —— 防火墙页取消勾选 FullCone 时也会
+  `uci del firewall.xxxxx.fullcone6`
+
+> 说明：本插件的 NAT4（随机端口）只作用于 **IPv4**
+> （nft 规则带 `meta nfproto ipv4` 限定），IPv6 侧无对应实现。
+> 因为 IPv6 一般无需 NAT，做对称型没有实际意义。
+
+### 与防火墙页的 write 行为对齐
+
+防火墙页的实际动作（`uci show firewall` 差异）：
+
+```sh
+# 勾选「启用 FullCone NAT」
+uci set firewall.cfg01e63d.fullcone='1'
+
+# 取消勾选
+uci del firewall.cfg01e63d.fullcone
+uci del firewall.cfg01e63d.fullcone6
+uci del firewall.cfg01e63d.syn_flood
+uci set firewall.cfg01e63d.synflood_protect='1'
+```
+
+注意「取消」用的是 **`del`（删键）而非 `set 0`**，且会一并删 IPv6 的
+`fullcone6`。插件的 `set_fullcone_exact()` 已对齐「del 而非 set 0」这一行为，
+早期版本只写 `fullcone=0`，会与防火墙页产生差异。
+
+`fullcone6` 则**不再无条件删除**，改由页面上独立的
+「同时开启 IPv6 FullCone NAT」选项控制（默认关闭）——
+既兼容防火墙页的删除动作，又给用户显式开启的余地。
+
+**现已实现双向同步**。四个子命令分工：
+
+| 命令 | 方向 | 作用 |
+|------|------|------|
+| `apply` | **本页 → 防火墙** | 按 `natmode.main.mode` 写 `firewall.@defaults[0].fullcone` 等，重载 fw4 |
+| `sync` | **防火墙 → 本页** | 从实际状态反推生效模式，写回 `natmode.main.mode` |
+| `status` | 双向 | 输出状态；顺带做自愈 + 调 `sync` |
+| `reapply` | 防火墙 → 本页 | firewall 重载回调：先 `sync` 再重建 nft 规则 |
+
+### 防火墙 → 本页
+
+在防火墙页改了 FullCone 后，会触发 `procd` 的 reload 触发器
+（`procd_add_reload_trigger firewall`）→ `init.d/natmode` 的 `reload_service()`
+→ `reapply` → 自动 `sync`。所以**不需要打开本页**就已经对齐。
+
+此外打开本页时 `status` 也会再同步一次并给出提示。不会出现"静默不一致"。
+
+### 本页 → 防火墙
+
+`apply` 写的就是 `firewall.@defaults[0].fullcone` 这个**同一个 UCI 键**，
+防火墙页直接读它，所以本页保存后防火墙页的勾选状态立即同步。
+
+页面「当前状态」里新增一行「防火墙页对应状态」，直接告诉你防火墙页此刻长什么样。
+
+### 一个必须说清的限制：防火墙页无法表达 NAT4
+
+防火墙页只有「启用 FullCone NAT」这一个复选框，只能表达开 / 关：
+
+| 本页模式 | 防火墙页显示 | 说明 |
+|---------|------------|------|
+| 全锥形 NAT1 | ✅ 已勾选 | 完全一致 |
+| 受限型 NAT3 | ⬜ 未勾选 | 完全一致 |
+| 全对称型 NAT4 | ⬜ 未勾选 | **与 NAT3 看起来一样** |
+
+NAT4 的「随机端口」在防火墙页**没有任何对应控件**，差异只体现在本页的
+「随机端口规则」上。所以反向同步（防火墙 → 本页）在遇到
+「未勾选 + 有随机端口规则」时会判定为 `symmetric`，能正确还原 NAT4；
+但**在防火墙页上你无法把 NAT4 改成 NAT3**（两者都是未勾选）——
+要区分请用本页。
+
+### 防火墙页选项不显示的鸡生蛋问题
+
+`zones.js` 里那个复选框的显示条件是：
+
+```js
+if (L.hasSystemFeature('fullcone')) { ... }
+```
+
+而该判定（luci-base 的 rpcd ucode 插件）是
+`access('/sys/module/nft_fullcone/refcnt')` —— **模块加载后选项才显示**。
+于是「没开 fullcone → 模块没加载 → 选项不显示 → 没法在防火墙页打开」。
+
+`apply` / `sync` 里加了 `ensure_module()`（主动 `modprobe nft_fullcone`），
+保证该选项始终可见可用。
+
+### 为什么 NAT4 之前不生效（两个真实原因）
+
+**① nft 规则被 fw4 reload 冲掉**（主因）
+
+`fullcone` 是 UCI 驱动的，fw4 每次 reload 都会重新生成，所以 NAT1 一直有效。
+而 NAT4 的 `masquerade fully-random` 是脚本直接 `nft insert` 进去的，
+**fw4 reload 会重建整张 ruleset，把这条规则连同整个链一起重建掉**。
+
+原流程的顺序正好放大了这个问题：
+
+```
+handleSave → exec apply(写 firewall + reload fw4 + 插规则)
+           → ui.changes.apply()   ← 这里又触发一次 firewall reload，冲掉规则
+```
+
+已修（最终顺序为三步）：
+
+```js
+handleSave → exec apply          // ① 先落地：写 firewall UCI + reload + 插规则
+           → ui.changes.apply()  // ② 提交变更（触发 firewall reload，冲掉规则）
+           → exec reapply        // ③ 兜底：按 natmode.main.mode 重建 nft 规则
+```
+
+- ① 必须最先 —— 反了会被 `do_sync` 用旧值覆盖（详见上节 bug）
+- ③ 兜底 —— fw4 重建 ruleset 必然冲掉手插规则，`reapply` 补回
+- `init.d` 补上 `procd_open_instance` —— 没有实例时 procd 不会真正注册
+  `service_triggers` 里的 reload 触发器，firewall 变化就不会回调
+- `status` 里加**自愈**：模式是 symmetric 但规则没了就自动补回（打开页面即修复）
+
+**② 硬件/软件卸载让 NAT4 不可观测**
+
+`flow offload`（尤其硬件卸载走 PPE）把流量绕过 conntrack 直接转发，
+nft 的 masquerade 根本不参与 → 随机端口无从谈起，实测仍是 NAT3。
+
+已修：新增 `auto_offload` 选项（默认 `1`），选择 NAT4 时自动关闭卸载。
+代价是吞吐下降（硬件转发失效），故保留为可选项。页面在
+「NAT4 + 卸载开启」时会给出明确警告。
 
 > 补充：`L.hasSystemFeature('fullcone')` 的判定（luci-base 的 rpcd ucode 插件）是
 > `access('/sys/module/nft_fullcone/refcnt')`，即**模块加载后**防火墙页才显示该选项。
@@ -212,6 +471,58 @@ o.value('2', _("Hardware flow offloading"));
 
   ```js
   var m = new form.Map('natmode', _('NAT 类型'), _('...'));
+  ```
+- **单选按钮用 `form.ListValue`，不能用 `form.RadioValue`**：
+
+  luci-base 的 `form.js` 里**没有 `RadioValue` 这个类**。可用的 option 类只有：
+
+  ```
+  Value  DynamicList  ListValue  RichListValue  RangeSliderValue
+  Flag   MultiValue   TextValue   DummyValue     Button
+  HiddenValue  FileUpload  DirectoryPicker  SectionValue
+  ```
+
+  传一个不存在的类进去，`AbstractSection.option()` 的
+  `L.Class.isSubclass(...)` 检查失败，页面直接抛：
+
+  ```
+  TypeError: Class must be a descendant of CBIAbstractValue
+  ```
+
+  正确写法（`ListValue` 的 `widget` 支持 `select` / `radio`）：
+
+  ```js
+  var o = s.option(form.ListValue, 'mode', _('NAT 类型'));
+  o.widget = 'radio';
+  o.orientation = 'vertical';
+  o.value('fullcone', _('全锥形NAT') + '（NAT1）…');
+  ```
+- **`m.render()` 返回 Promise，不能直接塞进 `E()`**：
+
+  form.js 里 `CBIMap.prototype.render()`：
+
+  ```js
+  render() { return this.load().then(this.renderContents.bind(this)); }
+  ```
+
+  若在「状态块 + 表单」的组合写法中直接
+
+  ```js
+  return E('div', {}, [ statusBlock, m.render() ]);   // ❌
+  ```
+
+  `E()` 不会解析 Promise，页面会显示 `[object Promise]`，
+  **表单本体（单选按钮）根本没渲染**，表现为「能看到状态但改不了设置」。
+
+  正确写法：
+
+  ```js
+  return m.render().then(function(nodes) {
+      var kids = [ statusBlock ];
+      if (Array.isArray(nodes)) kids = kids.concat(nodes);
+      else if (nodes != null)   kids.push(nodes);
+      return E('div', {}, kids);
+  });
   ```
 
 ### 验证切换是否生效

@@ -18,6 +18,7 @@
 function parseStatus(text) {
 	var st = { mode: '?', effective: '?', fullcone: '0',
 	           random_rules: '0', srcnat_chains: '0', offload: 'off',
+	           fullcone6: '0', fullcone6_opt: '0',
 	           fw_mode: 'restricted', module: '?', synced: '0', healed: '0' };
 	(text || '').split('\n').forEach(function(line) {
 		var kv = line.split('=');
@@ -63,6 +64,8 @@ function renderStatus(st) {
 	var rows = [
 		_('当前模式'),        modeLabel(st.effective),
 		_('FullCone 开关'),   (st.fullcone === '1' ? _('已启用') : _('已关闭')),
+		_('IPv6 FullCone'),   (st.fullcone6 === '1' ? _('已启用') : _('已关闭'))
+			+ (st.effective === 'fullcone' ? '' : _('（仅全锥形时生效）')),
 		_('防火墙页对应状态'), fwPageLabel(st),
 		_('随机端口规则'),    (st.random_rules !== '0'
 			? _('已注入 ') + st.random_rules + _(' 条') : _('无')),
@@ -174,6 +177,20 @@ return view.extend({
 			_('端口完全随机，映射不可预测，打洞基本不可用。仅用于特殊合规场景。'));
 		o.default = 'fullcone';
 
+		// IPv6 FullCone 独立开关，默认【不勾选】。
+		//
+		// form.Flag 对应 UCI 里的 '0'/'1'；未设置时回落到 default。
+		// 默认值必须是字符串 '0'，不能是数字 0 ——
+		// form.js 的 Flag 用 === '1' 判定，数字会落到 false 分支但
+		// 写入时可能出现类型不一致，统一用字符串最稳。
+		var o6 = s.option(form.Flag, 'fullcone6',
+			_('同时开启 IPv6 FullCone NAT（fullcone6）'),
+			_('对应 firewall.@defaults[0].fullcone6。'
+			+ 'IPv6 通常有公网前缀、不做 NAT，收益有限；'
+			+ '少数环境下反而会导致 IPv6 连接异常，故默认关闭。'
+			+ '仅在选择「全锥形NAT（NAT1）」时生效，其余模式下该键会被删除。'));
+		o6.default = '0';
+
 		var oc = s.option(form.Flag, 'auto_offload',
 			_('应用 NAT4 时自动关闭路由/NAT 卸载'),
 			_('NAT4 的随机端口依赖 nft masquerade，而卸载（尤其硬件卸载走 PPE）'
@@ -181,19 +198,29 @@ return view.extend({
 			+ '勾选后，选择「全对称型NAT」时会自动关闭卸载（代价：吞吐下降）。'));
 		oc.default = '1';
 
-		// 保存后真正应用（改 firewall 配置 + 重载 fw4 + 注入随机端口规则）
+		// 保存后真正应用。
 		//
-		// 顺序很关键：必须先 ui.changes.apply() 再 exec apply。
-		// apply 内部最后一步才插入 nft 的 fully-random 规则；若之后又发生
-		// 一次 firewall reload（ui.changes.apply() 触发 reload_config），
-		// 刚插的规则会被 fw4 重建 ruleset 时冲掉 —— 这正是
-		// 「NAT1 能生效、NAT4 不生效」的根因。
+		// 顺序（踩过两次坑，这里说明为什么是这三步）：
+		//
+		//   1) apply     —— 必须【先】执行。
+		//      若先做 ui.changes.apply()，它触发的 firewall reload 会回调
+		//      init.d/natmode 的 reapply → do_sync。此时 firewall.fullcone
+		//      还是旧值（1），do_sync 会把刚选的 symmetric 改回 fullcone，
+		//      表现就是「插件里改不了 NAT 类型」。
+		//
+		//   2) ui.changes.apply() —— 提交 UCI 改动并触发 firewall reload。
+		//      fw4 重建 ruleset，会冲掉第 1 步插入的 nft 随机端口规则。
+		//
+		//   3) reapply   —— 兜底。按 natmode.main.mode 重建 nft 规则。
+		//      do_sync 现在只处理无歧义情况，不会误改 mode，所以这一步安全。
 		m.handleSaveApply = function(ev) {
 			var self = this;
 			return self.handleSave(ev).then(function() {
+				return fs.exec('/usr/sbin/natmode-apply', ['apply']);
+			}).then(function() {
 				return ui.changes.apply();
 			}).then(function() {
-				return fs.exec('/usr/sbin/natmode-apply', ['apply']);
+				return fs.exec('/usr/sbin/natmode-apply', ['reapply']);
 			}).then(function() {
 				ui.addNotification(null,
 					E('p', _('NAT 模式已应用，防火墙已重载。')), 'success');

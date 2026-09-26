@@ -55,6 +55,7 @@
 
 CONF_MODE="natmode.main.mode"
 CONF_OFFLOAD="natmode.main.auto_offload"
+CONF_FULLCONE6="natmode.main.fullcone6"
 
 log() {
 	logger -t natmode "$@"
@@ -90,6 +91,44 @@ set_fullcone() {  # 幂等写入 firewall.@defaults[0].fullcone
 		log "firewall fullcone -> $val"
 	fi
 	return 0
+}
+
+# 写入 firewall 的 fullcone 开关，行为与防火墙页面完全一致。
+#
+# 防火墙页（网络 → 防火墙 → 常规设置）的实际动作是：
+#   勾选   → uci set firewall.cfgXXXXXX.fullcone='1'
+#   取消   → uci del firewall.cfgXXXXXX.fullcone
+#            uci del firewall.cfgXXXXXX.fullcone6
+#            uci del firewall.cfgXXXXXX.syn_flood
+#            uci set firewall.cfgXXXXXX.synflood_protect='1'
+# 即「取消」用的是 del（把键删掉），不是 set 0。
+# 这里对齐该行为，并一并处理 IPv6 的 fullcone6（之前漏了）。
+set_fullcone_exact() {
+	local val="$1"
+
+	if [ "$val" = "1" ]; then
+		uci set firewall.@defaults[0].fullcone='1' 2>/dev/null || return 1
+		# IPv6 的 fullcone6 由独立选项控制（默认关闭）
+		if [ "$(get_flag "$CONF_FULLCONE6" 0)" = "1" ]; then
+			uci set firewall.@defaults[0].fullcone6='1' 2>/dev/null
+			log "firewall fullcone=1（IPv6 fullcone6 一并开启）"
+		else
+			uci -q del firewall.@defaults[0].fullcone6
+			log "firewall fullcone=1（IPv6 fullcone6 未开启，默认关闭）"
+		fi
+	else
+		# 与防火墙页取消勾选一致：删键，而不是写 0
+		uci -q del firewall.@defaults[0].fullcone
+		uci -q del firewall.@defaults[0].fullcone6
+		log "firewall fullcone 已删除（与防火墙页取消勾选一致，含 fullcone6）"
+	fi
+	uci commit firewall
+	return 0
+}
+
+# 读取 fullcone6 选项当前值（0/1）
+get_fullcone6() {
+	get_flag "$CONF_FULLCONE6" 0
 }
 
 offload_state() {  # 输出 off / sw / hw
@@ -210,26 +249,47 @@ ensure_module() {
 # 网络 → 防火墙 → 常规设置 里的「启用 FullCone NAT」写的就是
 # firewall.@defaults[0].fullcone，与本插件同一个 UCI 键。
 # 在那边改动只会改 firewall，不会动 natmode.main.mode。
-# 这里把实际生效的模式写回 natmode，使两边始终一致。
 #
-# 返回：0=有同步发生，1=本来就一致
+# ⚠️ 关键限制：firewall.fullcone 只有「1 / 空」两种状态，
+#    而 natmode 有三档。空 = 可能是 restricted 也可能是 symmetric。
+#    且 nft 随机端口规则在 fw4 reload 后已被冲掉，无法据此区分。
+#    因此这里【只处理无歧义的两种情况】，其余一律保持 natmode 原值不动。
+#
+#    早期版本用 detect_effective() 强行覆盖，结果在保存流程中
+#    （apply 尚未执行、fullcone 还是 1）把刚选的对称型改回全锥形，
+#    表现为「插件里改不了 NAT 类型」。
+#
+# 返回：0=有同步发生，1=本来就一致（或存在歧义、保持不动）
 # ─────────────────────────────────────────────────────────────
 do_sync() {
-	local mode effective
+	local mode fc
 	mode="$(get_mode)"
-	effective="$(detect_effective)"
+	fc="$(uci -q get firewall.@defaults[0].fullcone 2>/dev/null)"
+	fc="${fc:-0}"
 
-	if [ "$mode" = "$effective" ]; then
-		echo "$effective"
-		return 1
+	# 情况一（无歧义）：fullcone=1 → 一定是全锥形。
+	# 开了 fullcone 就不可能是 NAT3/NAT4。
+	if [ "$fc" = "1" ] && [ "$mode" != "fullcone" ]; then
+		uci set "$CONF_MODE"="fullcone" 2>/dev/null && uci commit natmode
+		ensure_module
+		log "同步（防火墙 → 本页）：$mode -> fullcone"
+		echo "fullcone"
+		return 0
 	fi
 
-	uci set "$CONF_MODE"="$effective" 2>/dev/null && uci commit natmode
-	# 反向同步时若落到 fullcone 之外，也补一下模块可见性
-	ensure_module
-	log "反向同步（防火墙 → 本页）：$mode -> $effective"
-	echo "$effective"
-	return 0
+	# 情况二（无歧义）：fullcone 已关闭，而 natmode 仍是 fullcone
+	# → 说明本页记录已过期，降为 restricted。
+	if [ "$fc" != "1" ] && [ "$mode" = "fullcone" ]; then
+		uci set "$CONF_MODE"="restricted" 2>/dev/null && uci commit natmode
+		log "同步（防火墙 → 本页）：fullcone -> restricted"
+		echo "restricted"
+		return 0
+	fi
+
+	# 情况三（有歧义）：fullcone 关闭 + natmode 是 restricted/symmetric
+	# → 无法区分，保持 natmode 原值。natmode.main.mode 是唯一可靠记录。
+	echo "$mode"
+	return 1
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -241,16 +301,16 @@ do_apply() {
 
 	case "$mode" in
 		fullcone)
-			set_fullcone 1
+			set_fullcone_exact 1
 			nft_random_del
 			ensure_module
 			;;
 		restricted)
-			set_fullcone 0
+			set_fullcone_exact 0
 			nft_random_del
 			;;
 		symmetric)
-			set_fullcone 0
+			set_fullcone_exact 0
 			# 卸载与 NAT4 互斥：开着卸载，随机端口规则根本不参与转发
 			[ "$(get_flag "$CONF_OFFLOAD" 1)" = "1" ] && offload_disable
 			;;
@@ -310,14 +370,22 @@ do_status() {
 		log "自愈：NAT4 随机端口规则已重新注入"
 	fi
 
-	# ── 反推实际生效模式 ──
-	effective="$(detect_effective)"
-
-	# ── 反向同步：firewall 页面被改过 → 写回 natmode.main.mode ──
+	# ── 反向同步（自愈之后调用，此时 detect 才可靠）──
+	# 注意：自愈必须放在同步之前。若先同步，nft 规则还没重建，
+	# symmetric 会被误判成 restricted。
+	effective="$(do_sync)"
+	synced=0
 	if [ "$mode" != "$effective" ]; then
-		uci set "$CONF_MODE"="$effective" 2>/dev/null && uci commit natmode
 		synced=1
-		log "反向同步（防火墙 → 本页）：$mode -> $effective"
+	fi
+
+	# 同步后若落到 symmetric 而规则仍缺失，再补一次
+	if [ "$effective" = "symmetric" ] && [ "${rand:-0}" = "0" ] \
+	   && [ "${chains:-0}" != "0" ] && [ "$healed" = "0" ]; then
+		nft_random_add >/dev/null
+		rand="$(nft_random_count)"
+		healed=1
+		log "自愈（同步后）：NAT4 随机端口规则已重新注入"
 	fi
 
 	# 防火墙页「启用 FullCone NAT」复选框此刻的勾选状态
@@ -329,6 +397,8 @@ do_status() {
 	echo "effective=$effective"
 	echo "fw_mode=$fw_mode"
 	echo "fullcone=$fc"
+	echo "fullcone6=$(uci -q get firewall.@defaults[0].fullcone6 2>/dev/null || echo 0)"
+	echo "fullcone6_opt=$(get_fullcone6)"
 	echo "random_rules=${rand:-0}"
 	echo "srcnat_chains=${chains:-0}"
 	echo "offload=$(offload_state)"

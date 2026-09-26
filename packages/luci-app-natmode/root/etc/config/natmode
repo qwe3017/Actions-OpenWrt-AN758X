@@ -9,6 +9,15 @@ config natmode 'main'
 	#                最严格，打洞基本不可用，仅用于特殊合规/隐匿场景
 	option mode 'fullcone'
 
+	# 是否对 IPv6 也开启 FullCone（对应 firewall.@defaults[0].fullcone6）。
+	# 默认 0（不勾选）：
+	#   - IPv6 一般不做 NAT（本机就有公网 IPv6 前缀），fullcone6 收益有限
+	#   - 少数运营商/环境下 fullcone6 会导致 IPv6 连接异常
+	#   - 防火墙页取消勾选 FullCone 时也会 uci del fullcone6，与默认一致
+	# 置 1 则在启用全锥形时一并写 firewall.@defaults[0].fullcone6='1'。
+	# 仅当 mode=fullcone 时生效；restricted / symmetric 下该键始终被删除。
+	option fullcone6 '0'
+
 	# 应用 NAT4 时自动关闭「路由/NAT 卸载」。
 	# 原因：卸载（尤其硬件卸载走 PPE）会把流量绕过 conntrack 直接转发，
 	#       nft 的 masquerade fully-random 根本不参与 → NAT4 只是配置上了，
