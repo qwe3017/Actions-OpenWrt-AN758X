@@ -3,8 +3,10 @@ name: Build PonWrt (Airoha AN758x PON)
 env:
   
   BUILD_ROOT: /workdir
-  SOURCE: ${{ github.event.inputs.source || 'fork' }}
-  REPO_URL: ${{ github.event.inputs.source == 'pbs05/ponwrt' && 'https://github.com/pbs05/ponwrt' || 'https://github.com/qwe3017/ponwrt' }}
+  SOURCE: ${{ github.event.inputs.source || 'jsntit/ponwrt' }}
+  # 本分支（h3c-hm2004-du）默认上游 = jsntit/ponwrt 的 h3c-hm2004-du 分支
+  # source=fork 仍指向 qwe3017/ponwrt；未指定时兜底到 jsntit/ponwrt（与 SOURCE 默认一致）
+  REPO_URL: ${{ github.event.inputs.source == 'pbs05/ponwrt' && 'https://github.com/pbs05/ponwrt' || github.event.inputs.source == 'fork' && 'https://github.com/qwe3017/ponwrt' || 'https://github.com/jsntit/ponwrt' }}
   FEEDS_CONF: ''
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
@@ -15,9 +17,9 @@ env:
   USE_CCACHE: false                    
   TZ: Asia/Shanghai
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  REPO_BRANCH: ${{ github.event.inputs.branch || 'master' }}
+  REPO_BRANCH: ${{ github.event.inputs.branch || 'h3c-hm2004-du' }}
   SOC: ${{ github.event.inputs.soc || 'an7581' }}
-  PROFILE: ${{ github.event.inputs.profile || 'fiberhome_hg5585f-ct' }}
+  PROFILE: ${{ github.event.inputs.profile || 'h3c_hm2004-du' }}
   BUILD_SCOPE: ${{ github.event.inputs.scope || 'firmware' }}
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
   # ---- NPU 固件（RISC-V 裸机固件，由工作流按机型现编或沿用仓库自带）----
@@ -35,15 +37,16 @@ on:
       source:
         description: '编译源码仓库'
         required: true
-        default: 'pbs05/ponwrt'
+        default: 'jsntit/ponwrt'
         type: choice
         options:
           - fork
           - pbs05/ponwrt
+          - jsntit/ponwrt
       branch:
         description: 'ponwrt 源码分支'
         required: true
-        default: 'master'
+        default: 'h3c-hm2004-du'
       soc:
         description: 'SoC 平台'
         required: true
@@ -55,7 +58,7 @@ on:
       profile:
         description: '机型 profile (all=全机型编译)'
         required: true
-        default: 'fiberhome_hg5585f-ct'
+        default: 'h3c_hm2004-du'
         type: choice
         options:
           - fiberhome_hg5585f-cu
@@ -202,7 +205,7 @@ jobs:
         NPU_WIFI="${NPU_WIFI}"
         if [ "$NPU_WIFI" = "auto" ]; then
           case "$PROFILE" in
-            fiberhome_hg5585f-ct|fiberhome_hg5585f-cu|znxt_zn515xg-d|znxt_zn504xg-d)
+            fiberhome_hg5585f-ct|fiberhome_hg5585f-cu|znxt_zn515xg-d|znxt_zn504xg-d|h3c_hm2004-du)
               NPU_WIFI="MT7916" ;;
             all)
               NPU_WIFI="MT7916"
@@ -289,9 +292,9 @@ jobs:
         # 按分支 + 周号：同一周内复用同一条目。
         # 原先用 github.run_number → 每次运行都 save 一份新副本，
         # 10GB 配额会被迅速刷满并淘汰掉有用的旧缓存。
-        key: ponwrt-dl-${{ env.SOURCE }}-${{ github.event.inputs.branch || 'master' }}-${{ steps.resolve.outputs.week }}
+        key: ponwrt-dl-${{ env.SOURCE }}-${{ github.event.inputs.branch || 'h3c-hm2004-du' }}-${{ steps.resolve.outputs.week }}
         restore-keys: |
-          ponwrt-dl-${{ env.SOURCE }}-${{ github.event.inputs.branch || 'master' }}-
+          ponwrt-dl-${{ env.SOURCE }}-${{ github.event.inputs.branch || 'h3c-hm2004-du' }}-
         # 关键：即使后面编译失败也要保住已下载的源码包
         save-always: true
 

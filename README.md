@@ -3,6 +3,18 @@
 基于 P3TERX `Actions-OpenWrt` 模板重构，源码指向 [pbs05/ponwrt](https://github.com/pbs05/ponwrt)（默认分支 `master`），
 针对 AN7581 / AN7583 PON 光猫做机型选择、磁盘释放与工具链缓存。
 
+> **本分支 `h3c-hm2004-du`**：上游已切到 [jsntit/ponwrt](https://github.com/jsntit/ponwrt) 的
+> `h3c-hm2004-du` 分支（该分支新增了 **H3C HM2004-DU** 机型支持：板级 DTS + `an7581.mk` 设备定义）。
+>
+> - 手动触发（Actions → Build PonWrt → Run workflow）的**默认值已改为**：
+>   `source=jsntit/ponwrt` / `branch=h3c-hm2004-du` / `profile=h3c_hm2004-du` / `soc=an7581`，
+>   即**直接点 Run workflow 就能编出 H3C HM2004-DU 的固件**。
+> - 要编其它机型：把 `profile` 改成目标机型，并把 `source`/`branch` 切回 `pbs05/ponwrt` + `master`
+>   （那些机型的 DTS 在上游 `master` 里，本分支里没有）。
+> - `source` 取值与上游对应：`jsntit/ponwrt` → `github.com/jsntit/ponwrt`；`pbs05/ponwrt` → 上游原仓库；
+>   `fork` → `qwe3017/ponwrt`。
+> - 上游源码分支名与本 Actions 分支名一致（都是 `h3c-hm2004-du`），便于对照排查。
+
 ## 目录结构
 
 ```
