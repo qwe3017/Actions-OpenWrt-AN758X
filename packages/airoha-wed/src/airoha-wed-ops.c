@@ -105,14 +105,16 @@ struct airoha_wdma_desc {
 #define WED_WPDMA_INT_TRIG_RX_DONE	BIT(1)
 #define WED_WPDMA_INT_TRIG_TX_DONE	(BIT(4) | BIT(5))
 /*
- * WDMA receive-done interrupts live at bit 16/17, not bit 0/1.
+ * WDMA receive-done interrupts live at bit 17:16, not bit 1:0.
  * wdma.h:232-233 defines WDMA_INT_MSK_RX_DONE_INT0/1 as BIT(16)/BIT(17) and
  * wed_def.h:498-499 defines WED_WDMA_INT_TRIG_FLD_RX_DONE0/1 with the same
- * shifts. Using GENMASK(1, 0) enabled TX_DONE_INT1/2 instead, so the receive
- * path was left with no interrupt source at all and the RX driver never
+ * shifts. Masking GENMASK(1, 0) enabled TX_DONE_INT1/2 instead, so the
+ * receive path had no interrupt source at all and the RX driver never
  * advanced its DMA index.
+ *
+ * GENMASK() takes the high bit first: bits 17:16 are GENMASK(17, 16).
  */
-#define WED_WDMA_INT_RX_DONE		(GENMASK(1, 16))
+#define WED_WDMA_INT_RX_DONE		GENMASK(17, 16)
 #define WED_WPDMA_INT_CTRL_SUBRT_ADV	BIT(21)
 
 #define WED_TX_BM_DYN_THR_LO		1
