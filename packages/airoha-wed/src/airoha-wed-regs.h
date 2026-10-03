@@ -119,6 +119,23 @@
 #define AIROHA_WED_RING_OFS_CPU_IDX	0x08
 #define AIROHA_WED_RING_OFS_DMA_IDX	0x0c
 
+/*
+ * WED_WDMA_RX{0,1}_THRES_CFG -- vendor woe_hw.c:1149-1150.
+ *
+ * These two registers are NOT written by mainline mtk_wed_mainline.c; MT7622
+ * expects the bootloader/firmware to have pre-loaded them. The AN7581
+ * bootloader does not, so they keep their power-on reset values, where
+ * DRX_CRX_DISTANCE_THRES reads back as 0. RX_DRV then computes a descriptor
+ * distance of zero, decides there is nothing to move, and never fetches a
+ * single packet: downlink traffic piles up in PSE port 3 until the shared
+ * buffer is drained and the link stalls.
+ *
+ * Measured on hardware: 0x00040020 (WAIT_BM_CNT_MAX = 0x020, DISTANCE = 0).
+ * Correct value for a 1024-entry ring: 0x03fdffff.
+ */
+#define AIROHA_WED_RX_THRES_WAIT_BM_CNT_MAX	GENMASK(12, 0)
+#define AIROHA_WED_RX_THRES_DRX_CRX_DISTANCE	GENMASK(28, 16)
+
 /* ------------------------------------------------------------- field defs */
 /* WED_REV */
 #define AIROHA_WED_REV_ID		GENMASK(31, 16)

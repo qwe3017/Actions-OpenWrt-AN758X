@@ -497,6 +497,67 @@ static void airoha_wed_set_ext_int(struct airoha_wed_bind *b, bool en)
 	airoha_wed_read(bank, AIROHA_WED_EX_INT_MSK);
 }
 
+/*
+ * WED_WDMA_RX{0,1}_THRES_CFG gate the WDMA receive driver.
+ *
+ * mainline mtk_wed_mainline.c never writes them: on MT7622 the bootloader
+ * pre-loads the values. AN7581's bootloader does not, so the registers keep
+ * their reset value 0x00040020, whose DRX_CRX_DISTANCE_THRES field is 0. With a
+ * zero distance RX_DRV concludes that no descriptor is pending and leaves
+ * RX0PROC at zero forever, so the packets we hand to PSE port 3 are never
+ * drained. Vendor writes this unconditionally in whnat_hal_wed_init()
+ * (woe_hw.c:1149-1152) with WAIT_BM_CNT_MAX = 0xffff and distance = len - 3.
+ */
+static void airoha_wed_configure_rx_drv(struct airoha_wed_bind *b,
+					struct mtk_wed_device *dev)
+{
+	struct airoha_wed_bank *bank = b->bank;
+	unsigned int ring_len = WED_WDMA_RING_SIZE;
+	unsigned int thres;
+	int i;
+
+	/*
+	 * Fetch the depth the rings were actually programmed with rather than
+	 * assuming: airoha_wed_tx_ring_setup() may have used a different size,
+	 * and the vendor distance threshold is derived from it.
+	 */
+	for (i = 0; i < ARRAY_SIZE(dev->rx_wdma); i++) {
+		if (dev->rx_wdma[i].size) {
+			ring_len = dev->rx_wdma[i].size;
+			break;
+		}
+	}
+
+	thres = AIROHA_WED_RX_THRES_WAIT_BM_CNT_MAX |
+		FIELD_PREP(AIROHA_WED_RX_THRES_DRX_CRX_DISTANCE,
+			   (ring_len - 3) & GENMASK(11, 0));
+
+	for (i = 0; i < ARRAY_SIZE(dev->rx_wdma); i++) {
+		airoha_wed_write(bank, AIROHA_WED_WDMA_RX_THRES_CFG(i),
+				 thres);
+
+		/*
+		 * Vendor's whnat_hal_wdma_ring_init() only programs BASE and
+		 * COUNT for these rings, so a stale CPU index survives from
+		 * power-on. A WED-mirror index that disagrees with the WDMA
+		 * window looks like a desynchronised ring to RX_DRV; clear both
+		 * copies so the driver starts from a known state.
+		 */
+		airoha_wed_write(bank, AIROHA_WED_WDMA_RING_RX(i) +
+				 AIROHA_WED_RING_OFS_CPU_IDX, 0);
+		airoha_wed_write(bank, AIROHA_WED_WDMA_RING_RX(i) +
+				 AIROHA_WED_RING_OFS_DMA_IDX, 0);
+		airoha_wdma_write(bank, AIROHA_WDMA_RING_RX(i) +
+				  AIROHA_WDMA_RING_OFS_CPU_IDX, 0);
+		airoha_wdma_write(bank, AIROHA_WDMA_RING_RX(i) +
+				  AIROHA_WDMA_RING_OFS_DMA_IDX, 0);
+	}
+
+	dev_info(dev->dev,
+		 "airoha-wed: WED%d RX driver thresholds: ring_len=%u thres=0x%08x\n",
+		 bank->slot, ring_len, thres);
+}
+
 static void airoha_wed_hw_init(struct airoha_wed_bind *b,
 			       struct mtk_wed_device *dev)
 {
@@ -507,6 +568,9 @@ static void airoha_wed_hw_init(struct airoha_wed_bind *b,
 
 	dev->init_done = true;
 	airoha_wed_set_ext_int(b, false);
+
+	/* Must precede the TXBM reset below: RX_DRV latches these on reset. */
+	airoha_wed_configure_rx_drv(b, dev);
 
 	airoha_wed_write(bank, AIROHA_WED_TX_BM_BASE,
 			 dev->tx_buf_ring.desc_phys);
