@@ -492,8 +492,31 @@ static void airoha_wed_hw_init_early(struct airoha_wed_bind *b,
 			  AIROHA_WDMA_GLO_RX_INFO2_PRERES |
 			  AIROHA_WDMA_GLO_RX_INFO3_PRERES);
 
-	airoha_wed_write(bank, AIROHA_WED_WDMA_OFST0, 0x2a042a20 + offset);
-	airoha_wed_write(bank, AIROHA_WED_WDMA_OFST1, 0x29002800 + offset);
+	/*
+	 * The WED engine reaches its companion WDMA through WED_WDMA_CFG_BASE
+	 * plus the bank selectors in OFST0/OFST1, and the two must describe the
+	 * same hardware. The mt7622 pair is CFG_BASE 0x1b100000 with
+	 * OFST1 0x29002800, resolving to ring banks at 0x1b102800 -- an address
+	 * that does not exist here, so the RX driver quietly polled nothing and
+	 * every packet queued on PSE port 3 stayed there.
+	 *
+	 * On the AN7581 the window is at 0x1fa06000 / 0x1fa06400, so CFG_BASE
+	 * comes from the real window address and OFST0/OFST1 from the matching
+	 * ECNT constants: 0x1fa00000 + 0x6000 = 0x1fa06000 for instance 0 and
+	 * + 0x6400 = 0x1fa06400 for instance 1.
+	 */
+	if (bank->wdma_phys) {
+		u32 cfg_base = (u32)(bank->wdma_phys -
+				     (b->index ? 0x6400 : 0x6000));
+
+		airoha_wed_write(bank, AIROHA_WED_WDMA_CFG_BASE, cfg_base);
+		dev_info(dev->dev,
+			 "airoha-wed: WED%d WDMA cfg_base 0x%08x for window 0x%llx\n",
+			 bank->slot, cfg_base, bank->wdma_phys);
+	}
+
+	airoha_wed_write(bank, AIROHA_WED_WDMA_OFST0, 0x62046220 + offset);
+	airoha_wed_write(bank, AIROHA_WED_WDMA_OFST1, 0x61006000 + offset);
 
 	airoha_wed_pcie_map(b, dev);
 }

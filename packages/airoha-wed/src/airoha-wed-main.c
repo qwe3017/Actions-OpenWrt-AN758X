@@ -166,7 +166,8 @@ static void airoha_wed_report(struct airoha_wed *wed)
  * devm_ioremap() and not devm_ioremap_resource() on purpose -- the latter
  * would claim the memory region that airoha-wdma already owns.
  */
-static void __iomem *airoha_wed_map_wdma(struct device *dev, int idx)
+static void __iomem *airoha_wed_map_wdma(struct device *dev, int idx,
+					 unsigned long long *phys)
 {
 	struct device_node *np;
 	struct resource res;
@@ -185,6 +186,8 @@ static void __iomem *airoha_wed_map_wdma(struct device *dev, int idx)
 	base = devm_ioremap(dev, res.start, resource_size(&res));
 	if (!base)
 		return NULL;
+
+	*phys = (unsigned long long)res.start;
 
 	dev_info(dev, "WED%d companion WDMA window at 0x%llx\n", idx,
 		 (unsigned long long)res.start);
@@ -246,7 +249,7 @@ static int airoha_wed_probe(struct platform_device *pdev)
 		b->size = (unsigned long long)resource_size(res);
 		b->irq = platform_get_irq(pdev, i);	/* may be -ENXIO */
 		b->rev = airoha_wed_read(b, AIROHA_WED_REV);
-		b->wdma = airoha_wed_map_wdma(dev, i);
+		b->wdma = airoha_wed_map_wdma(dev, i, &b->wdma_phys);
 		if (!b->wdma)
 			dev_warn(dev,
 				 "WED%d: no companion WDMA window, offload will refuse to attach\n",

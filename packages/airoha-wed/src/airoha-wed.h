@@ -25,6 +25,7 @@ struct airoha_wed_bank {
 	u32			 slot;
 	/* companion WDMA instance window (0x1fa06000 / 0x1fa06400) */
 	void __iomem		*wdma;
+	unsigned long long	 wdma_phys;
 };
 
 struct airoha_wed {
