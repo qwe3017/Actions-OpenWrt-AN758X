@@ -104,7 +104,15 @@ struct airoha_wdma_desc {
 #define WED_PCIE_INT_TRIG_STATUS	(BIT(16) | BIT(24))
 #define WED_WPDMA_INT_TRIG_RX_DONE	BIT(1)
 #define WED_WPDMA_INT_TRIG_TX_DONE	(BIT(4) | BIT(5))
-#define WED_WDMA_INT_MASK_RX_DONE	GENMASK(1, 0)
+/*
+ * WDMA receive-done interrupts live at bit 16/17, not bit 0/1.
+ * wdma.h:232-233 defines WDMA_INT_MSK_RX_DONE_INT0/1 as BIT(16)/BIT(17) and
+ * wed_def.h:498-499 defines WED_WDMA_INT_TRIG_FLD_RX_DONE0/1 with the same
+ * shifts. Using GENMASK(1, 0) enabled TX_DONE_INT1/2 instead, so the receive
+ * path was left with no interrupt source at all and the RX driver never
+ * advanced its DMA index.
+ */
+#define WED_WDMA_INT_RX_DONE		(GENMASK(1, 16))
 #define WED_WPDMA_INT_CTRL_SUBRT_ADV	BIT(21)
 
 #define WED_TX_BM_DYN_THR_LO		1
@@ -609,7 +617,7 @@ static void airoha_wed_hw_init(struct airoha_wed_bind *b,
 static void airoha_wed_configure_irq(struct airoha_wed_bind *b, u32 irq_mask)
 {
 	struct airoha_wed_bank *bank = b->bank;
-	u32 wdma_mask = WED_WDMA_INT_MASK_RX_DONE;
+	u32 wdma_mask = WED_WDMA_INT_RX_DONE;
 
 	airoha_wed_write(bank, AIROHA_WED_CTRL,
 			 airoha_wed_read(bank, AIROHA_WED_CTRL) |
