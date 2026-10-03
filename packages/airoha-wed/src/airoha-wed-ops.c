@@ -475,14 +475,28 @@ static void airoha_wed_hw_init_early(struct airoha_wed_bind *b,
 	airoha_wed_reset(b, AIROHA_WED_RST_WED);
 	airoha_wed_set_wpdma(b, dev);
 
+	/*
+	 * AN7581 needs the ECNT branch of whnat_hal_wed_init(), not the
+	 * mt7622 one that mainline carries. The vendor clears [25][24][23]
+	 * and sets [21] AXI_W_AFTER_AW_EN plus [16] WCOMPLETE_SEL with the
+	 * comment "for fix WDMA stress fail issue on ECNT platform"; the
+	 * mainline/mt7622 path instead *sets* [24] and [23]. Setting them
+	 * here leaves the RX driver fed but never completing AXI writes, so
+	 * it polls the ring without ever consuming PSE port 3.
+	 */
 	mask |= AIROHA_WED_WDMA_DYNAMIC_DMAD_RECYCLE |
-		AIROHA_WED_WDMA_RX_DIS_FSM_AUTO_IDLE;
-	set |= AIROHA_WED_WDMA_SKIP_DMAD_PREPARE |
-	       AIROHA_WED_WDMA_IDLE_DMAD_SUPPLY;
+		AIROHA_WED_WDMA_RX_DIS_FSM_AUTO_IDLE |
+		AIROHA_WED_WDMA_SKIP_DMAD_PREPARE |
+		AIROHA_WED_WDMA_IDLE_DMAD_SUPPLY;
+	set |= AIROHA_WED_WDMA_AXI_W_AFTER_AW_EN |
+	       AIROHA_WED_WDMA_WCOMPLETE_SEL;
 
 	airoha_wed_write(bank, AIROHA_WED_WDMA_GLO_CFG,
 			 (airoha_wed_read(bank, AIROHA_WED_WDMA_GLO_CFG) &
 			  ~mask) | set);
+	dev_info(dev->dev,
+		 "airoha-wed: WED%d WDMA glo_cfg 0x%08x\n", bank->slot,
+		 airoha_wed_read(bank, AIROHA_WED_WDMA_GLO_CFG));
 
 	/* WDMA must reserve the three RX info words before WED reads it. The
 	 * airoha-wdma driver already does this; do not clear it here. */
