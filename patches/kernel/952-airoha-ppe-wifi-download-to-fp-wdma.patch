@@ -28,6 +28,15 @@ left for whoever builds that subtarget (see
 foe_fdb_7552_64Byte.h, whose FP_WDMA is "(7) /*P7 OQ10&11 => WDMA
 RX0&RX1*\/").
 
+The entry also needs the force-QoS bit.  PpeSetInfoBlk2() sets
+iblk2->fqos for precisely this case -- "(SUPPORT_WDMA) && (FP_WDMA ==
+fpidx)" -- and with FP_WDMA == 3 that is the branch taken.  Without it
+the PPE does not steer the packet into the QDMA channel that fronts the
+WDMA block, so it lands in the port 3 OQ and WED's RX_DRV never leaves
+idle: measured WED_WDMA_ST 0x00000000 and RX0_PROCESSED_MIB stuck at 0
+while 7281 packets sat in P3.  AIROHA_FOE_IB2_PSE_QOS (BIT(9) of info
+block 2) is that same bit.
+
 airoha_ppe_foe_flow_stats_update() also needs a second guard.  It
 rewrites an entry's egress to FP_NPU so the NPU can meter the flow, and
 it already refuses to touch FP_TDMA entries.  On this combination the
@@ -42,7 +51,7 @@ WDMA RX rings land.
 
 ---
  drivers/net/ethernet/airoha/airoha_ppe.c | 45 ++++++++++++++++++++++++++++++--------
- 1 file changed, 38 insertions(+), 7 deletions(-)
+ 1 file changed, 39 insertions(+), 7 deletions(-)
 
 diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/airoha/airoha_ppe.c
 --- a/drivers/net/ethernet/airoha/airoha_ppe.c
@@ -63,7 +72,7 @@ diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/air
  
  static const struct rhashtable_params airoha_flow_table_params = {
  	.head_offset = offsetof(struct airoha_flow_table_entry, node),
-@@ -449,9 +458,29 @@
+@@ -449,9 +458,30 @@
  
  		if (!airoha_ppe_get_wdma_info(netdev, data->eth.h_dest,
  					      &info)) {
@@ -90,7 +99,8 @@ diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/air
  			val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, info.idx) |
  			       FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT,
 -					  FE_PSE_PORT_CDM4);
-+					  AIROHA_FE_PSE_PORT_WDMA);
++					  AIROHA_FE_PSE_PORT_WDMA) |
++			       AIROHA_FOE_IB2_PSE_QOS;
  			qdata |= FIELD_PREP(AIROHA_FOE_ACTDP, info.bss);
  			wlan_etype = FIELD_PREP(AIROHA_FOE_MAC_WDMA_BAND,
  						info.idx) |
